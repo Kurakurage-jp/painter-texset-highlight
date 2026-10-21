@@ -1,4 +1,4 @@
-# TexSet Spotlight - Adobe Substance 3D Painter plugin
+# TexSet Highlight - Adobe Substance 3D Painter plugin
 #
 # Select a texture set in the Texture Set List and the meshes that use it flash in the 3D viewport
 # (hold for 1 s, then fade out over 1 s). With "X-ray" enabled, every other texture set is drawn
@@ -6,15 +6,15 @@
 #
 # How it works
 #   Painter has no API to overlay colors in the viewport, so the plugin temporarily assigns a shader
-#   instance ("TexSet Spotlight", texset_spotlight_shader.glsl = metal/rough PBR with an emissive
+#   instance ("TexSet Highlight", texset_highlight_shader.glsl = metal/rough PBR with an emissive
 #   highlight) to the selected texture set and animates its highlight_mix parameter. Other texture
 #   sets get a "ghost" instance of the same shader (alpha/brightness multipliers). Layer stacks are
 #   never touched. The original shader assignments are restored when the flash ends, before the
 #   project is saved or closed, and on the next project open if Painter crashed mid-flash.
 #
-# Install: copy texset_spotlight.py and texset_spotlight_shader.glsl into Painter's plugins folder
+# Install: copy texset_highlight.py and texset_highlight_shader.glsl into Painter's plugins folder
 #   (Windows: Documents\Adobe\Adobe Substance 3D Painter\python\plugins). Painter loads it at startup;
-#   click "Spotlight" in the menu bar to open the settings panel (a dockable window with every option).
+#   click "Highlight" in the menu bar to open the settings panel (a dockable window with every option).
 # Tested with Substance 3D Painter 12.1.1 (Vulkan) on Windows 11: Python API 0.3.5, Python 3.13.9, PySide6 6.8.6,
 #   JavaScript API 1.1.20. Other 12.x releases are expected to work but were not checked.
 import json
@@ -32,11 +32,11 @@ import substance_painter.ui as spui
 from PySide6 import QtCore, QtGui, QtWidgets
 
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
-SHADER_NAME = "texset_spotlight_shader"
+SHADER_NAME = "texset_highlight_shader"
 SHADER_FILE = os.path.join(PLUGIN_DIR, SHADER_NAME + ".glsl")
-HL_LABEL = "TexSet Spotlight"
-GHOST_LABEL = "TexSet Spotlight Ghost"
-STATE_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir(), "TexSetSpotlight")
+HL_LABEL = "TexSet Highlight"
+GHOST_LABEL = "TexSet Highlight Ghost"
+STATE_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir(), "TexSetHighlight")
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
 POLL_MS = 150
 FADE_STEP_MS = 33
@@ -48,12 +48,12 @@ _plugin = None
 
 # UI strings. The panel has a language switch; the default follows the system locale.
 TEXT = {
-    "en": {"menu": "Spotlight", "open": "Open the Spotlight panel", "panel": "Spotlight", "language": "Language",
+    "en": {"menu": "Highlight", "open": "Open the Highlight panel", "panel": "Highlight", "language": "Language",
            "enabled": "Flash automatically when a texture set is selected", "xray": "X-ray: see through the other texture sets",
-           "color": "Highlight color", "color_dialog": "Spotlight color", "hold_ms": "Hold time (ms)", "fade_ms": "Fade time (ms)",
+           "color": "Highlight color", "color_dialog": "Highlight color", "hold_ms": "Hold time (ms)", "fade_ms": "Fade time (ms)",
            "intensity": "Highlight intensity", "tint": "Highlight tint", "ghost_alpha": "X-ray opacity", "ghost_dim": "X-ray brightness",
            "flash_now": "Flash the selected texture set", "reset": "Reset to defaults"},
-    "ja": {"menu": "スポットライト", "open": "スポットライトのパネルを開く", "panel": "スポットライト", "language": "言語",
+    "ja": {"menu": "ハイライト", "open": "ハイライトのパネルを開く", "panel": "ハイライト", "language": "言語",
            "enabled": "テクスチャセットを選んだときに自動で光らせる", "xray": "X-ray: ほかのテクスチャセットを透かして中を見せる",
            "color": "光の色", "color_dialog": "光の色", "hold_ms": "表示する時間 (ms)", "fade_ms": "消える時間 (ms)",
            "intensity": "光の強さ", "tint": "色味の混ぜ具合", "ghost_alpha": "X-ray の不透明度", "ghost_dim": "X-ray の明るさ",
@@ -64,7 +64,7 @@ LANGS = [("en", "English"), ("ja", "日本語")]
 # Styling close to Painter's own property panels: dark fields, thin slider with a round handle,
 # numeric boxes without spin arrows, flat gray buttons.
 PANEL_QSS = """
-QWidget#TexSetSpotlightPanel { background: #2b2b2b; }
+QWidget#TexSetHighlightPanel { background: #2b2b2b; }
 QLabel { color: #b8b8b8; }
 QCheckBox { color: #d4d4d4; spacing: 7px; }
 QCheckBox::indicator { width: 13px; height: 13px; border: 1px solid #121212; border-radius: 2px; background: #1b1b1b; }
@@ -93,18 +93,26 @@ def T(cfg, key):
 
 
 def log(msg):
-    splog.info("[texset_spotlight] " + str(msg))
+    splog.info("[texset_highlight] " + str(msg))
 
 
 def _settings():
+    return QtCore.QSettings("KURAKUlab", "TexSetHighlight")
+
+
+def _legacy_settings():
+    # Settings saved while the plugin was still called "TexSet Spotlight" (before 2026-10-21)
     return QtCore.QSettings("KURAKUlab", "TexSetSpotlight")
 
 
 def load_settings():
     s = _settings()
+    legacy = _legacy_settings()
     out = dict(_defaults)
     for k, v in _defaults.items():
         val = s.value(k)
+        if val is None:
+            val = legacy.value(k)
         if val is None:
             continue
         try:
@@ -169,7 +177,7 @@ def active_set_name():
     return None
 
 
-class Spotlight(QtCore.QObject):
+class Highlight(QtCore.QObject):
     def __init__(self):
         super().__init__()
         self.cfg = load_settings()
@@ -369,7 +377,7 @@ class Spotlight(QtCore.QObject):
         self.shader_url = None
         QtCore.QTimer.singleShot(500, self.recover)
 
-    # ---- settings panel (one dockable window with every control) + "Spotlight" entry in the menu bar
+    # ---- settings panel (one dockable window with every control) + "Highlight" entry in the menu bar
     def build_menu(self):
         self.panel = SettingsPanel(self)
         self.dock = spui.add_dock_widget(self.panel)
@@ -377,7 +385,7 @@ class Spotlight(QtCore.QObject):
             self.dock.hide()  # stays available in Painter's Window menu; shown from the menu bar entry
         except Exception:
             pass
-        # Painter's menu bar only accepts menus, so "Spotlight" is a menu that opens the panel as soon as it is
+        # Painter's menu bar only accepts menus, so "Highlight" is a menu that opens the panel as soon as it is
         # clicked (aboutToShow) and closes itself again; its single item does the same for keyboard users.
         self.menu_action = QtGui.QAction(T(self.cfg, "open"))
         self.menu_action.triggered.connect(self.show_panel)
@@ -450,13 +458,13 @@ class Spotlight(QtCore.QObject):
 
 
 class SettingsPanel(QtWidgets.QWidget):
-    """All Spotlight settings in one place. Values apply immediately and are saved."""
+    """All Highlight settings in one place. Values apply immediately and are saved."""
 
     def __init__(self, owner):
         super().__init__()
         self.owner = owner
         self.setWindowTitle(T(owner.cfg, "panel"))
-        self.setObjectName("TexSetSpotlightPanel")
+        self.setObjectName("TexSetHighlightPanel")
         self.setStyleSheet(PANEL_QSS)
         self.setMinimumWidth(0)  # must dock in a narrow column like Painter's other panels
         self.controls = {}
@@ -612,7 +620,7 @@ class SettingsPanel(QtWidgets.QWidget):
 
 def start_plugin():
     global _plugin
-    _plugin = Spotlight()
+    _plugin = Highlight()
     log("started")
 
 
