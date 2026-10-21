@@ -458,17 +458,14 @@ class SettingsPanel(QtWidgets.QWidget):
         self.setWindowTitle(T(owner.cfg, "panel"))
         self.setObjectName("TexSetSpotlightPanel")
         self.setStyleSheet(PANEL_QSS)
+        self.setMinimumWidth(0)  # must dock in a narrow column like Painter's other panels
         self.controls = {}
         self.labels = {}
-        lay = QtWidgets.QVBoxLayout(self)
-        lay.setContentsMargins(12, 10, 12, 10)
-        lay.setSpacing(8)
+        self.lay = QtWidgets.QVBoxLayout(self)
+        self.lay.setContentsMargins(10, 8, 10, 8)
+        self.lay.setSpacing(6)
 
         top = QtWidgets.QHBoxLayout()
-        self.chk_enabled = QtWidgets.QCheckBox()
-        self.chk_enabled.toggled.connect(lambda on: owner.update_setting("enabled", bool(on)))
-        top.addWidget(self.chk_enabled)
-        top.addStretch(1)
         self.labels["language"] = QtWidgets.QLabel()
         top.addWidget(self.labels["language"])
         self.lang_combo = QtWidgets.QComboBox()
@@ -476,43 +473,40 @@ class SettingsPanel(QtWidgets.QWidget):
             self.lang_combo.addItem(name, code)
         self.lang_combo.currentIndexChanged.connect(lambda i: owner.update_setting("lang", self.lang_combo.itemData(i)))
         top.addWidget(self.lang_combo)
-        lay.addLayout(top)
+        top.addStretch(1)
+        self.lay.addLayout(top)
+
+        self.chk_enabled = QtWidgets.QCheckBox()
+        self.chk_enabled.toggled.connect(lambda on: owner.update_setting("enabled", bool(on)))
+        self.lay.addWidget(self.chk_enabled)
         self.chk_xray = QtWidgets.QCheckBox()
         self.chk_xray.toggled.connect(lambda on: owner.update_setting("xray", bool(on)))
-        lay.addWidget(self.chk_xray)
+        self.lay.addWidget(self.chk_xray)
 
-        form = QtWidgets.QGridLayout()
-        form.setHorizontalSpacing(10)
-        form.setVerticalSpacing(7)
-        form.setColumnMinimumWidth(0, 150)
-        form.setColumnStretch(1, 1)
-        lay.addLayout(form)
-        self.row = 0
+        self.labels["color"] = QtWidgets.QLabel()
+        self.lay.addWidget(self.labels["color"])
         self.color_btn = QtWidgets.QPushButton()
         self.color_btn.setFixedSize(110, 22)
         self.color_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.color_btn.clicked.connect(self.pick_color)
-        self.labels["color"] = QtWidgets.QLabel()
-        form.addWidget(self.labels["color"], self.row, 0)
-        form.addWidget(self.color_btn, self.row, 1, 1, 2, QtCore.Qt.AlignLeft)
-        self.row += 1
-        self.add_slider(form, "hold_ms", 100, 10000, 100, 1)
-        self.add_slider(form, "fade_ms", 100, 10000, 100, 1)
-        self.add_slider(form, "intensity", 0.0, 8.0, 0.1, 100)
-        self.add_slider(form, "tint", 0.0, 1.0, 0.05, 100)
-        self.add_slider(form, "ghost_alpha", 0.0, 1.0, 0.01, 100)
-        self.add_slider(form, "ghost_dim", 0.0, 1.0, 0.05, 100)
+        self.lay.addWidget(self.color_btn, 0, QtCore.Qt.AlignLeft)
 
-        btns = QtWidgets.QHBoxLayout()
+        # One setting = its name on one line, slider + value on the next, so the panel also fits a narrow dock
+        self.add_slider("hold_ms", 100, 10000, 100, 1)
+        self.add_slider("fade_ms", 100, 10000, 100, 1)
+        self.add_slider("intensity", 0.0, 8.0, 0.1, 100)
+        self.add_slider("tint", 0.0, 1.0, 0.05, 100)
+        self.add_slider("ghost_alpha", 0.0, 1.0, 0.01, 100)
+        self.add_slider("ghost_dim", 0.0, 1.0, 0.05, 100)
+
         self.btn_flash = QtWidgets.QPushButton()
         self.btn_flash.clicked.connect(owner.flash_now)
         self.btn_reset = QtWidgets.QPushButton()
         self.btn_reset.clicked.connect(self.reset_defaults)
-        btns.addWidget(self.btn_flash)
-        btns.addWidget(self.btn_reset)
-        btns.addStretch(1)
-        lay.addLayout(btns)
-        lay.addStretch(1)
+        self.lay.addSpacing(4)
+        self.lay.addWidget(self.btn_flash)
+        self.lay.addWidget(self.btn_reset)
+        self.lay.addStretch(1)
         self.retranslate()
         self.refresh()
 
@@ -529,12 +523,13 @@ class SettingsPanel(QtWidgets.QWidget):
         self.lang_combo.setCurrentIndex(max(0, self.lang_combo.findData(cfg.get("lang", "en"))))
         self.lang_combo.blockSignals(False)
 
-    def add_slider(self, form, key, lo, hi, step, scale):
+    def add_slider(self, key, lo, hi, step, scale):
         """Slider + spin box pair. `scale` maps float values to slider integers (1 for int settings)."""
         is_int = scale == 1
         slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         slider.setRange(int(lo * scale), int(hi * scale))
         slider.setSingleStep(max(1, int(step * scale)))
+        slider.setMinimumWidth(60)
         if is_int:
             spin = QtWidgets.QSpinBox()
             spin.setRange(int(lo), int(hi))
@@ -569,10 +564,12 @@ class SettingsPanel(QtWidgets.QWidget):
         slider.valueChanged.connect(from_slider)
         spin.valueChanged.connect(from_spin)
         self.labels[key] = QtWidgets.QLabel()
-        form.addWidget(self.labels[key], self.row, 0)
-        form.addWidget(slider, self.row, 1)
-        form.addWidget(spin, self.row, 2)
-        self.row += 1
+        self.lay.addWidget(self.labels[key])
+        row = QtWidgets.QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(slider, 1)
+        row.addWidget(spin)
+        self.lay.addLayout(row)
         self.controls[key] = (slider, spin, scale, is_int)
 
     def refresh(self):
