@@ -20,6 +20,7 @@ semi-transparent during the flash so you can also spot parts hidden inside the m
 - Click **Spotlight** in the menu bar to open the settings panel: everything in one dockable window
   (enable/disable, X-ray, highlight color, hold/fade time, intensity, tint, X-ray opacity/brightness, Flash now,
   Reset to defaults). Changes apply immediately and persist between sessions
+- UI in English or Japanese (switch in the panel; defaults to Japanese on a Japanese system)
 
 ![Settings panel](docs/spotlight_panel.png)
 
@@ -88,6 +89,9 @@ Substance 3D Painter 用プラグインです。「X-ray」をオンにすると
 - メニューバーの「Spotlight」をクリックすると設定パネルが開く（Painter のドックなので好きな場所に置ける。閉じたら
   ウィンドウメニューから再表示）。有効/無効、X-ray、色、表示時間、消える時間、強さ、色味、X-ray の不透明度・明るさ、
   今すぐ光らせる、既定に戻す、がすべてこのパネルにある。変えた値はその場で反映され、次回起動後も残る
+- パネル右上の「言語」で日本語と English を切り替えられる（日本語の Windows では最初から日本語）
+
+![設定パネル（日本語）](docs/spotlight_panel_ja.png)
 
 ### 入れ方
 `texset_spotlight.py` と `texset_spotlight_shader.glsl` を Painter のプラグインフォルダー

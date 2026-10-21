@@ -42,8 +42,29 @@ POLL_MS = 150
 FADE_STEP_MS = 33
 
 _defaults = {"enabled": True, "xray": True, "hold_ms": 1000, "fade_ms": 1000, "color": [0.55, 1.0, 0.25],
-             "intensity": 1.2, "tint": 0.5, "ghost_alpha": 0.12, "ghost_dim": 0.35}
+             "intensity": 1.2, "tint": 0.5, "ghost_alpha": 0.12, "ghost_dim": 0.35,
+             "lang": "ja" if QtCore.QLocale.system().name().startswith("ja") else "en"}
 _plugin = None
+
+# UI strings. The panel has a language switch; the default follows the system locale.
+TEXT = {
+    "en": {"menu": "Spotlight", "open": "Open the Spotlight panel", "panel": "Spotlight", "language": "Language",
+           "enabled": "Flash the selected texture set", "xray": "X-ray: see through the other texture sets",
+           "color": "Highlight color", "color_dialog": "Spotlight color", "hold_ms": "Hold time (ms)", "fade_ms": "Fade time (ms)",
+           "intensity": "Highlight intensity", "tint": "Highlight tint", "ghost_alpha": "X-ray opacity", "ghost_dim": "X-ray brightness",
+           "flash_now": "Flash now", "reset": "Reset to defaults"},
+    "ja": {"menu": "スポットライト", "open": "スポットライトのパネルを開く", "panel": "スポットライト", "language": "言語",
+           "enabled": "選んだテクスチャセットを光らせる", "xray": "X-ray: ほかのテクスチャセットを透かして中を見せる",
+           "color": "光の色", "color_dialog": "光の色", "hold_ms": "表示する時間 (ms)", "fade_ms": "消える時間 (ms)",
+           "intensity": "光の強さ", "tint": "色味の混ぜ具合", "ghost_alpha": "X-ray の不透明度", "ghost_dim": "X-ray の明るさ",
+           "flash_now": "今のセットを光らせる", "reset": "既定に戻す"},
+}
+LANGS = [("en", "English"), ("ja", "日本語")]
+
+
+def T(cfg, key):
+    lang = cfg.get("lang") if cfg.get("lang") in TEXT else "en"
+    return TEXT[lang].get(key, TEXT["en"].get(key, key))
 
 
 def log(msg):
@@ -64,6 +85,8 @@ def load_settings():
         try:
             if isinstance(v, bool):
                 out[k] = str(val).lower() in ("1", "true")
+            elif isinstance(v, str):
+                out[k] = str(val)
             elif isinstance(v, int):
                 out[k] = int(val)
             elif isinstance(v, float):
@@ -331,12 +354,22 @@ class Spotlight(QtCore.QObject):
             pass
         # Painter's menu bar only accepts menus, so "Spotlight" is a menu that opens the panel as soon as it is
         # clicked (aboutToShow) and closes itself again; its single item does the same for keyboard users.
-        self.menu_action = QtGui.QAction("Open the Spotlight panel")
+        self.menu_action = QtGui.QAction(T(self.cfg, "open"))
         self.menu_action.triggered.connect(self.show_panel)
-        self.menu = QtWidgets.QMenu("Spotlight")
+        self.menu = QtWidgets.QMenu(T(self.cfg, "menu"))
         self.menu.addAction(self.menu_action)
         self.menu.aboutToShow.connect(self.on_menu_clicked)
         spui.add_menu(self.menu)
+
+    def retranslate(self):
+        """Apply the current language to the menu, the dock title and the panel."""
+        try:
+            self.menu.setTitle(T(self.cfg, "menu"))
+            self.menu_action.setText(T(self.cfg, "open"))
+            self.dock.setWindowTitle(T(self.cfg, "panel"))
+            self.panel.retranslate()
+        except Exception as e:
+            log("retranslate failed: %r" % (e,))
 
     def on_menu_clicked(self):
         QtCore.QTimer.singleShot(0, self.menu.hide)
@@ -354,7 +387,9 @@ class Spotlight(QtCore.QObject):
     def update_setting(self, key, value):
         self.cfg[key] = value
         save_settings(self.cfg)
-        if key == "enabled":
+        if key == "lang":
+            self.retranslate()
+        elif key == "enabled":
             if not value:
                 self.restore()
             self.last_name = None
@@ -395,17 +430,28 @@ class SettingsPanel(QtWidgets.QWidget):
     def __init__(self, owner):
         super().__init__()
         self.owner = owner
-        self.setWindowTitle("Spotlight")
+        self.setWindowTitle(T(owner.cfg, "panel"))
         self.setObjectName("TexSetSpotlightPanel")
         self.controls = {}
+        self.labels = {}
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(6)
 
-        self.chk_enabled = QtWidgets.QCheckBox("Flash the selected texture set")
+        top = QtWidgets.QHBoxLayout()
+        self.chk_enabled = QtWidgets.QCheckBox()
         self.chk_enabled.toggled.connect(lambda on: owner.update_setting("enabled", bool(on)))
-        lay.addWidget(self.chk_enabled)
-        self.chk_xray = QtWidgets.QCheckBox("X-ray: see through the other texture sets")
+        top.addWidget(self.chk_enabled)
+        top.addStretch(1)
+        self.labels["language"] = QtWidgets.QLabel()
+        top.addWidget(self.labels["language"])
+        self.lang_combo = QtWidgets.QComboBox()
+        for code, name in LANGS:
+            self.lang_combo.addItem(name, code)
+        self.lang_combo.currentIndexChanged.connect(lambda i: owner.update_setting("lang", self.lang_combo.itemData(i)))
+        top.addWidget(self.lang_combo)
+        lay.addLayout(top)
+        self.chk_xray = QtWidgets.QCheckBox()
         self.chk_xray.toggled.connect(lambda on: owner.update_setting("xray", bool(on)))
         lay.addWidget(self.chk_xray)
 
@@ -417,29 +463,44 @@ class SettingsPanel(QtWidgets.QWidget):
         self.color_btn = QtWidgets.QPushButton()
         self.color_btn.setFixedWidth(90)
         self.color_btn.clicked.connect(self.pick_color)
-        form.addWidget(QtWidgets.QLabel("Highlight color"), self.row, 0)
+        self.labels["color"] = QtWidgets.QLabel()
+        form.addWidget(self.labels["color"], self.row, 0)
         form.addWidget(self.color_btn, self.row, 1)
         self.row += 1
-        self.add_slider(form, "hold_ms", "Hold time (ms)", 100, 10000, 100, 1)
-        self.add_slider(form, "fade_ms", "Fade time (ms)", 100, 10000, 100, 1)
-        self.add_slider(form, "intensity", "Highlight intensity", 0.0, 8.0, 0.1, 100)
-        self.add_slider(form, "tint", "Highlight tint", 0.0, 1.0, 0.05, 100)
-        self.add_slider(form, "ghost_alpha", "X-ray opacity", 0.0, 1.0, 0.01, 100)
-        self.add_slider(form, "ghost_dim", "X-ray brightness", 0.0, 1.0, 0.05, 100)
+        self.add_slider(form, "hold_ms", 100, 10000, 100, 1)
+        self.add_slider(form, "fade_ms", 100, 10000, 100, 1)
+        self.add_slider(form, "intensity", 0.0, 8.0, 0.1, 100)
+        self.add_slider(form, "tint", 0.0, 1.0, 0.05, 100)
+        self.add_slider(form, "ghost_alpha", 0.0, 1.0, 0.01, 100)
+        self.add_slider(form, "ghost_dim", 0.0, 1.0, 0.05, 100)
 
         btns = QtWidgets.QHBoxLayout()
-        b1 = QtWidgets.QPushButton("Flash now")
-        b1.clicked.connect(owner.flash_now)
-        b2 = QtWidgets.QPushButton("Reset to defaults")
-        b2.clicked.connect(self.reset_defaults)
-        btns.addWidget(b1)
-        btns.addWidget(b2)
+        self.btn_flash = QtWidgets.QPushButton()
+        self.btn_flash.clicked.connect(owner.flash_now)
+        self.btn_reset = QtWidgets.QPushButton()
+        self.btn_reset.clicked.connect(self.reset_defaults)
+        btns.addWidget(self.btn_flash)
+        btns.addWidget(self.btn_reset)
         btns.addStretch(1)
         lay.addLayout(btns)
         lay.addStretch(1)
+        self.retranslate()
         self.refresh()
 
-    def add_slider(self, form, key, label, lo, hi, step, scale):
+    def retranslate(self):
+        cfg = self.owner.cfg
+        self.setWindowTitle(T(cfg, "panel"))
+        self.chk_enabled.setText(T(cfg, "enabled"))
+        self.chk_xray.setText(T(cfg, "xray"))
+        for key, label in self.labels.items():
+            label.setText(T(cfg, key))
+        self.btn_flash.setText(T(cfg, "flash_now"))
+        self.btn_reset.setText(T(cfg, "reset"))
+        self.lang_combo.blockSignals(True)
+        self.lang_combo.setCurrentIndex(max(0, self.lang_combo.findData(cfg.get("lang", "en"))))
+        self.lang_combo.blockSignals(False)
+
+    def add_slider(self, form, key, lo, hi, step, scale):
         """Slider + spin box pair. `scale` maps float values to slider integers (1 for int settings)."""
         is_int = scale == 1
         slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -476,7 +537,8 @@ class SettingsPanel(QtWidgets.QWidget):
 
         slider.valueChanged.connect(from_slider)
         spin.valueChanged.connect(from_spin)
-        form.addWidget(QtWidgets.QLabel(label), self.row, 0)
+        self.labels[key] = QtWidgets.QLabel()
+        form.addWidget(self.labels[key], self.row, 0)
         form.addWidget(slider, self.row, 1)
         form.addWidget(spin, self.row, 2)
         self.row += 1
@@ -505,13 +567,15 @@ class SettingsPanel(QtWidgets.QWidget):
 
     def pick_color(self):
         c = self.owner.cfg["color"]
-        col = QtWidgets.QColorDialog.getColor(QtGui.QColor.fromRgbF(c[0], c[1], c[2]), self, "Spotlight color")
+        col = QtWidgets.QColorDialog.getColor(QtGui.QColor.fromRgbF(c[0], c[1], c[2]), self, T(self.owner.cfg, "color_dialog"))
         if col.isValid():
             self.owner.update_setting("color", [col.redF(), col.greenF(), col.blueF()])
             self.update_color_button()
 
     def reset_defaults(self):
         for k, v in _defaults.items():
+            if k == "lang":
+                continue  # keep the chosen language
             self.owner.cfg[k] = list(v) if isinstance(v, list) else v
         save_settings(self.owner.cfg)
         self.refresh()
