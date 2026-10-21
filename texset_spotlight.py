@@ -15,7 +15,8 @@
 # Install: copy texset_spotlight.py and texset_spotlight_shader.glsl into Painter's plugins folder
 #   (Windows: Documents\Adobe\Adobe Substance 3D Painter\python\plugins). Painter loads it at startup;
 #   a "Spotlight" menu appears in the menu bar.
-# Tested with Substance 3D Painter 12.1.1 (Python API 0.3.5, PySide6).
+# Tested with Substance 3D Painter 12.1.1 (Vulkan) on Windows 11: Python API 0.3.5, Python 3.13.9, PySide6 6.8.6,
+#   JavaScript API 1.1.20. Other 12.x releases are expected to work but were not checked.
 import json
 import os
 import tempfile

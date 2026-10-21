@@ -28,7 +28,21 @@ semi-transparent during the flash so you can also spot parts hidden inside the m
 2. Start Painter (or Python > Reload Plugins Folder, then enable `texset_spotlight` in the Python menu).
 3. A **Spotlight** menu appears in the menu bar.
 
-Requirements: Substance 3D Painter 12.x (tested with 12.1.1, Python API 0.3.5). No extra Python packages.
+Requirements: Substance 3D Painter 12.x. No extra Python packages (uses the PySide6 bundled with Painter).
+
+### Tested with
+
+| | |
+|---|---|
+| Adobe Substance 3D Painter | **12.1.1** (Vulkan renderer) |
+| Painter Python API | 0.3.5 (Python 3.13.9, PySide6 6.8.6) |
+| Painter JavaScript API (`alg`) | 1.1.20 |
+| OS / GPU | Windows 11 (26200) / NVIDIA GeForce RTX 5060 Ti |
+| Project | 40 texture sets at 1024², single shader instance |
+
+Other 12.x releases should work (the plugin only uses `alg.shaders`, `substance_painter.textureset`,
+`substance_painter.ui` and `substance_painter.event`), but they have not been checked. Painter 11 and older use
+PySide2 and are not supported as-is.
 
 ## How it works
 
@@ -72,6 +86,11 @@ Substance 3D Painter 用プラグインです。「X-ray」をオンにすると
 ### 入れ方
 `texset_spotlight.py` と `texset_spotlight_shader.glsl` を Painter のプラグインフォルダー
 （Windows: `ドキュメント\Adobe\Adobe Substance 3D Painter\python\plugins\`）にコピーして Painter を起動する。
+
+### 動作を確認した環境
+- Adobe Substance 3D Painter **12.1.1**（Vulkan）、Python API 0.3.5（Python 3.13.9・PySide6 6.8.6）、JavaScript API 1.1.20
+- Windows 11 / NVIDIA GeForce RTX 5060 Ti、テクスチャセット 40 個（1024²）のプロジェクト
+- 12.x のほかの版でも動く見込みだが未確認。11 以前（PySide2）はそのままでは動かない
 
 ### 仕組みと制限
 ビューに色を重ねる API が無いため、選んだセットだけを一時的に発光付きシェーダーのインスタンスに切り替え、
