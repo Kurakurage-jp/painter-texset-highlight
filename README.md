@@ -17,8 +17,11 @@ semi-transparent during the flash so you can also spot parts hidden inside the m
 - Works with any number of texture sets; switching 40 sets takes about 0.2 s
 - Never touches your layer stacks. Shader assignments are restored when the flash ends, before every save/close,
   and on the next open if Painter crashed in the middle of a flash
-- "Spotlight" menu in the menu bar: enable/disable, X-ray, flash now, color, hold/fade time, intensity, X-ray opacity/brightness.
-  Settings persist between sessions
+- Click **Spotlight** in the menu bar to open the settings panel: everything in one dockable window
+  (enable/disable, X-ray, highlight color, hold/fade time, intensity, tint, X-ray opacity/brightness, Flash now,
+  Reset to defaults). Changes apply immediately and persist between sessions
+
+![Settings panel](docs/spotlight_panel.png)
 
 ## Install
 
@@ -26,7 +29,8 @@ semi-transparent during the flash so you can also spot parts hidden inside the m
    - Windows: `Documents\Adobe\Adobe Substance 3D Painter\python\plugins\`
    - macOS: `~/Documents/Adobe/Adobe Substance 3D Painter/python/plugins/`
 2. Start Painter (or Python > Reload Plugins Folder, then enable `texset_spotlight` in the Python menu).
-3. A **Spotlight** menu appears in the menu bar.
+3. **Spotlight** appears in the menu bar. Clicking it opens the settings panel, which is a normal Painter dock:
+   drag it wherever you like, or reopen it later from the Window menu.
 
 Requirements: Substance 3D Painter 12.x. No extra Python packages (uses the PySide6 bundled with Painter).
 
@@ -81,7 +85,9 @@ Substance 3D Painter 用プラグインです。「X-ray」をオンにすると
 - 選んだとき 1 秒光り、1 秒かけて消える（時間は変えられる）
 - X-ray: ほかのセットを不透明度 12 %・明るさ 35 % にする（変えられる・切れる）
 - レイヤーは触らない。光り終わったとき・保存や閉じる前・途中で落ちたときの次回起動時に、元のシェーダーの割り当てへ戻す
-- メニューバーの「Spotlight」: 有効/無効、X-ray、今すぐ光らせる、色、表示時間、消える時間、強さ、X-ray の不透明度・明るさ
+- メニューバーの「Spotlight」をクリックすると設定パネルが開く（Painter のドックなので好きな場所に置ける。閉じたら
+  ウィンドウメニューから再表示）。有効/無効、X-ray、色、表示時間、消える時間、強さ、色味、X-ray の不透明度・明るさ、
+  今すぐ光らせる、既定に戻す、がすべてこのパネルにある。変えた値はその場で反映され、次回起動後も残る
 
 ### 入れ方
 `texset_spotlight.py` と `texset_spotlight_shader.glsl` を Painter のプラグインフォルダー

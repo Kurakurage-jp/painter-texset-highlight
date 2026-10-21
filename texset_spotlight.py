@@ -14,7 +14,7 @@
 #
 # Install: copy texset_spotlight.py and texset_spotlight_shader.glsl into Painter's plugins folder
 #   (Windows: Documents\Adobe\Adobe Substance 3D Painter\python\plugins). Painter loads it at startup;
-#   a "Spotlight" menu appears in the menu bar.
+#   click "Spotlight" in the menu bar to open the settings panel (a dockable window with every option).
 # Tested with Substance 3D Painter 12.1.1 (Vulkan) on Windows 11: Python API 0.3.5, Python 3.13.9, PySide6 6.8.6,
 #   JavaScript API 1.1.20. Other 12.x releases are expected to work but were not checked.
 import json
@@ -140,6 +140,9 @@ class Spotlight(QtCore.QObject):
         self.fade.timeout.connect(self.on_fade)
         self.fade_t0 = 0.0
         self.menu = None
+        self.dock = None
+        self.panel = None
+        self.menu_action = None
         spevent.DISPATCHER.connect(spevent.ProjectAboutToSave, self.on_about_to_save)
         spevent.DISPATCHER.connect(spevent.ProjectAboutToClose, self.on_about_to_close)
         spevent.DISPATCHER.connect(spevent.ProjectEditionEntered, self.on_edition_entered)
@@ -318,64 +321,54 @@ class Spotlight(QtCore.QObject):
         self.shader_url = None
         QtCore.QTimer.singleShot(500, self.recover)
 
-    # ---- menu
+    # ---- settings panel (one dockable window with every control) + "Spotlight" entry in the menu bar
     def build_menu(self):
+        self.panel = SettingsPanel(self)
+        self.dock = spui.add_dock_widget(self.panel)
+        try:
+            self.dock.hide()  # stays available in Painter's Window menu; shown from the menu bar entry
+        except Exception:
+            pass
+        # Painter's menu bar only accepts menus, so "Spotlight" is a menu that opens the panel as soon as it is
+        # clicked (aboutToShow) and closes itself again; its single item does the same for keyboard users.
+        self.menu_action = QtGui.QAction("Open the Spotlight panel")
+        self.menu_action.triggered.connect(self.show_panel)
         self.menu = QtWidgets.QMenu("Spotlight")
-        a = QtGui.QAction("Flash the selected texture set", self.menu)
-        a.setCheckable(True); a.setChecked(bool(self.cfg["enabled"])); a.toggled.connect(self.set_enabled)
-        self.menu.addAction(a)
-        x = QtGui.QAction("X-ray: see through other texture sets", self.menu)
-        x.setCheckable(True); x.setChecked(bool(self.cfg["xray"])); x.toggled.connect(self.set_xray)
-        self.menu.addAction(x)
-        t = QtGui.QAction("Flash now", self.menu); t.triggered.connect(self.flash_now); self.menu.addAction(t)
-        self.menu.addSeparator()
-        c = QtGui.QAction("Highlight color...", self.menu); c.triggered.connect(self.pick_color); self.menu.addAction(c)
-        self.add_number("hold_ms", "Hold time... (%d ms)", "Hold time (ms)", 100, 10000, 100)
-        self.add_number("fade_ms", "Fade time... (%d ms)", "Fade time (ms)", 100, 10000, 100)
-        self.add_number("intensity", "Highlight intensity... (%.1f)", "Emissive intensity (0-8)", 0.0, 8.0, 0.1)
-        self.add_number("ghost_alpha", "X-ray opacity... (%.2f)", "Opacity of the other texture sets (0-1)", 0.0, 1.0, 0.01)
-        self.add_number("ghost_dim", "X-ray brightness... (%.2f)", "Brightness of the other texture sets (0-1)", 0.0, 1.0, 0.05)
+        self.menu.addAction(self.menu_action)
+        self.menu.aboutToShow.connect(self.on_menu_clicked)
         spui.add_menu(self.menu)
 
-    def add_number(self, key, fmt, label, lo, hi, step):
-        act = QtGui.QAction(fmt % self.cfg[key], self.menu)
+    def on_menu_clicked(self):
+        QtCore.QTimer.singleShot(0, self.menu.hide)
+        QtCore.QTimer.singleShot(0, self.show_panel)
 
-        def ask():
-            w = spui.get_main_window()
-            if isinstance(self.cfg[key], int):
-                v, ok = QtWidgets.QInputDialog.getInt(w, "Spotlight", label, int(self.cfg[key]), int(lo), int(hi), int(step))
-            else:
-                v, ok = QtWidgets.QInputDialog.getDouble(w, "Spotlight", label, float(self.cfg[key]), lo, hi, 2)
-            if ok:
-                self.cfg[key] = type(self.cfg[key])(v)
-                save_settings(self.cfg)
-                act.setText(fmt % self.cfg[key])
-        act.triggered.connect(ask)
-        self.menu.addAction(act)
+    def show_panel(self):
+        self.panel.refresh()
+        for w in (self.dock, self.panel):
+            try:
+                w.show()
+                w.raise_()
+            except Exception:
+                pass
 
-    def set_enabled(self, on):
-        self.cfg["enabled"] = bool(on)
+    def update_setting(self, key, value):
+        self.cfg[key] = value
         save_settings(self.cfg)
-        if not on:
-            self.restore()
-        self.last_name = None
-
-    def set_xray(self, on):
-        self.cfg["xray"] = bool(on)
-        save_settings(self.cfg)
+        if key == "enabled":
+            if not value:
+                self.restore()
+            self.last_name = None
+        elif self.active is not None and key in ("color", "intensity", "tint", "ghost_alpha", "ghost_dim"):
+            try:
+                self.set_mix(1.0 if self.hold.isActive() else 0.5)  # preview while a flash is running
+            except Exception:
+                pass
 
     def flash_now(self):
         name = active_set_name()
         if name:
             self.last_name = name
             self.flash(name)
-
-    def pick_color(self):
-        c = self.cfg["color"]
-        col = QtWidgets.QColorDialog.getColor(QtGui.QColor.fromRgbF(c[0], c[1], c[2]), spui.get_main_window(), "Spotlight color")
-        if col.isValid():
-            self.cfg["color"] = [col.redF(), col.greenF(), col.blueF()]
-            save_settings(self.cfg)
 
     def shutdown(self):
         self.poll.stop()
@@ -386,12 +379,142 @@ class Spotlight(QtCore.QObject):
                 spevent.DISPATCHER.disconnect(ev, cb)
             except Exception:
                 pass
-        if self.menu is not None:
-            try:
-                spui.delete_ui_element(self.menu)
-            except Exception:
-                pass
-            self.menu = None
+        for el in (self.menu, self.dock):
+            if el is not None:
+                try:
+                    spui.delete_ui_element(el)
+                except Exception:
+                    pass
+        self.menu = None
+        self.dock = None
+
+
+class SettingsPanel(QtWidgets.QWidget):
+    """All Spotlight settings in one place. Values apply immediately and are saved."""
+
+    def __init__(self, owner):
+        super().__init__()
+        self.owner = owner
+        self.setWindowTitle("Spotlight")
+        self.setObjectName("TexSetSpotlightPanel")
+        self.controls = {}
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(6)
+
+        self.chk_enabled = QtWidgets.QCheckBox("Flash the selected texture set")
+        self.chk_enabled.toggled.connect(lambda on: owner.update_setting("enabled", bool(on)))
+        lay.addWidget(self.chk_enabled)
+        self.chk_xray = QtWidgets.QCheckBox("X-ray: see through the other texture sets")
+        self.chk_xray.toggled.connect(lambda on: owner.update_setting("xray", bool(on)))
+        lay.addWidget(self.chk_xray)
+
+        form = QtWidgets.QGridLayout()
+        form.setHorizontalSpacing(8)
+        form.setVerticalSpacing(4)
+        lay.addLayout(form)
+        self.row = 0
+        self.color_btn = QtWidgets.QPushButton()
+        self.color_btn.setFixedWidth(90)
+        self.color_btn.clicked.connect(self.pick_color)
+        form.addWidget(QtWidgets.QLabel("Highlight color"), self.row, 0)
+        form.addWidget(self.color_btn, self.row, 1)
+        self.row += 1
+        self.add_slider(form, "hold_ms", "Hold time (ms)", 100, 10000, 100, 1)
+        self.add_slider(form, "fade_ms", "Fade time (ms)", 100, 10000, 100, 1)
+        self.add_slider(form, "intensity", "Highlight intensity", 0.0, 8.0, 0.1, 100)
+        self.add_slider(form, "tint", "Highlight tint", 0.0, 1.0, 0.05, 100)
+        self.add_slider(form, "ghost_alpha", "X-ray opacity", 0.0, 1.0, 0.01, 100)
+        self.add_slider(form, "ghost_dim", "X-ray brightness", 0.0, 1.0, 0.05, 100)
+
+        btns = QtWidgets.QHBoxLayout()
+        b1 = QtWidgets.QPushButton("Flash now")
+        b1.clicked.connect(owner.flash_now)
+        b2 = QtWidgets.QPushButton("Reset to defaults")
+        b2.clicked.connect(self.reset_defaults)
+        btns.addWidget(b1)
+        btns.addWidget(b2)
+        btns.addStretch(1)
+        lay.addLayout(btns)
+        lay.addStretch(1)
+        self.refresh()
+
+    def add_slider(self, form, key, label, lo, hi, step, scale):
+        """Slider + spin box pair. `scale` maps float values to slider integers (1 for int settings)."""
+        is_int = scale == 1
+        slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        slider.setRange(int(lo * scale), int(hi * scale))
+        slider.setSingleStep(max(1, int(step * scale)))
+        if is_int:
+            spin = QtWidgets.QSpinBox()
+            spin.setRange(int(lo), int(hi))
+            spin.setSingleStep(int(step))
+        else:
+            spin = QtWidgets.QDoubleSpinBox()
+            spin.setRange(lo, hi)
+            spin.setSingleStep(step)
+            spin.setDecimals(2)
+        spin.setFixedWidth(90)
+        guard = {"busy": False}
+
+        def from_slider(v):
+            if guard["busy"]:
+                return
+            guard["busy"] = True
+            val = int(v) if is_int else v / scale
+            spin.setValue(val)
+            self.owner.update_setting(key, val)
+            guard["busy"] = False
+
+        def from_spin(v):
+            if guard["busy"]:
+                return
+            guard["busy"] = True
+            slider.setValue(int(round(v * scale)))
+            self.owner.update_setting(key, int(v) if is_int else float(v))
+            guard["busy"] = False
+
+        slider.valueChanged.connect(from_slider)
+        spin.valueChanged.connect(from_spin)
+        form.addWidget(QtWidgets.QLabel(label), self.row, 0)
+        form.addWidget(slider, self.row, 1)
+        form.addWidget(spin, self.row, 2)
+        self.row += 1
+        self.controls[key] = (slider, spin, scale, is_int)
+
+    def refresh(self):
+        cfg = self.owner.cfg
+        for w, key in ((self.chk_enabled, "enabled"), (self.chk_xray, "xray")):
+            w.blockSignals(True)
+            w.setChecked(bool(cfg[key]))
+            w.blockSignals(False)
+        for key, (slider, spin, scale, is_int) in self.controls.items():
+            for w in (slider, spin):
+                w.blockSignals(True)
+            slider.setValue(int(round(cfg[key] * scale)))
+            spin.setValue(int(cfg[key]) if is_int else float(cfg[key]))
+            for w in (slider, spin):
+                w.blockSignals(False)
+        self.update_color_button()
+
+    def update_color_button(self):
+        c = self.owner.cfg["color"]
+        col = QtGui.QColor.fromRgbF(c[0], c[1], c[2])
+        self.color_btn.setText(col.name())
+        self.color_btn.setStyleSheet("background-color: %s; color: %s;" % (col.name(), "#000" if col.lightnessF() > 0.5 else "#fff"))
+
+    def pick_color(self):
+        c = self.owner.cfg["color"]
+        col = QtWidgets.QColorDialog.getColor(QtGui.QColor.fromRgbF(c[0], c[1], c[2]), self, "Spotlight color")
+        if col.isValid():
+            self.owner.update_setting("color", [col.redF(), col.greenF(), col.blueF()])
+            self.update_color_button()
+
+    def reset_defaults(self):
+        for k, v in _defaults.items():
+            self.owner.cfg[k] = list(v) if isinstance(v, list) else v
+        save_settings(self.owner.cfg)
+        self.refresh()
 
 
 def start_plugin():
