@@ -18,8 +18,9 @@ semi-transparent during the flash so you can also spot parts hidden inside the m
 - Never touches your layer stacks. Shader assignments are restored when the flash ends, before every save/close,
   and on the next open if Painter crashed in the middle of a flash
 - Click **Spotlight** in the menu bar to open the settings panel: everything in one dockable window
-  (enable/disable, X-ray, highlight color, hold/fade time, intensity, tint, X-ray opacity/brightness, Flash now,
-  Reset to defaults). Changes apply immediately and persist between sessions
+  (auto-flash on/off, X-ray, highlight color, hold/fade time, intensity, tint, X-ray opacity/brightness,
+  "Flash the selected texture set", "Reset to defaults"). Changes apply immediately and persist between sessions.
+  The panel is styled to match Painter's own property panels
 - UI in English or Japanese (switch in the panel; defaults to Japanese on a Japanese system)
 
 ![Settings panel](docs/spotlight_panel.png)
@@ -87,8 +88,9 @@ Substance 3D Painter 用プラグインです。「X-ray」をオンにすると
 - X-ray: ほかのセットを不透明度 12 %・明るさ 35 % にする（変えられる・切れる）
 - レイヤーは触らない。光り終わったとき・保存や閉じる前・途中で落ちたときの次回起動時に、元のシェーダーの割り当てへ戻す
 - メニューバーの「Spotlight」をクリックすると設定パネルが開く（Painter のドックなので好きな場所に置ける。閉じたら
-  ウィンドウメニューから再表示）。有効/無効、X-ray、色、表示時間、消える時間、強さ、色味、X-ray の不透明度・明るさ、
-  今すぐ光らせる、既定に戻す、がすべてこのパネルにある。変えた値はその場で反映され、次回起動後も残る
+  ウィンドウメニューから再表示）。自動で光らせるかどうか、X-ray、光の色、表示する時間、消える時間、光の強さ、色味の混ぜ具合、
+  X-ray の不透明度・明るさ、「選択中のテクスチャセットを光らせる」、「既定に戻す」がすべてこのパネルにある。
+  変えた値はその場で反映され、次回起動後も残る。見た目は Painter のプロパティパネルに合わせてある
 - パネル右上の「言語」で日本語と English を切り替えられる（日本語の Windows では最初から日本語）
 
 ![設定パネル（日本語）](docs/spotlight_panel_ja.png)

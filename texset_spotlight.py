@@ -49,17 +49,42 @@ _plugin = None
 # UI strings. The panel has a language switch; the default follows the system locale.
 TEXT = {
     "en": {"menu": "Spotlight", "open": "Open the Spotlight panel", "panel": "Spotlight", "language": "Language",
-           "enabled": "Flash the selected texture set", "xray": "X-ray: see through the other texture sets",
+           "enabled": "Flash automatically when a texture set is selected", "xray": "X-ray: see through the other texture sets",
            "color": "Highlight color", "color_dialog": "Spotlight color", "hold_ms": "Hold time (ms)", "fade_ms": "Fade time (ms)",
            "intensity": "Highlight intensity", "tint": "Highlight tint", "ghost_alpha": "X-ray opacity", "ghost_dim": "X-ray brightness",
-           "flash_now": "Flash now", "reset": "Reset to defaults"},
+           "flash_now": "Flash the selected texture set", "reset": "Reset to defaults"},
     "ja": {"menu": "スポットライト", "open": "スポットライトのパネルを開く", "panel": "スポットライト", "language": "言語",
-           "enabled": "選んだテクスチャセットを光らせる", "xray": "X-ray: ほかのテクスチャセットを透かして中を見せる",
+           "enabled": "テクスチャセットを選んだときに自動で光らせる", "xray": "X-ray: ほかのテクスチャセットを透かして中を見せる",
            "color": "光の色", "color_dialog": "光の色", "hold_ms": "表示する時間 (ms)", "fade_ms": "消える時間 (ms)",
            "intensity": "光の強さ", "tint": "色味の混ぜ具合", "ghost_alpha": "X-ray の不透明度", "ghost_dim": "X-ray の明るさ",
-           "flash_now": "今のセットを光らせる", "reset": "既定に戻す"},
+           "flash_now": "選択中のテクスチャセットを光らせる", "reset": "既定に戻す"},
 }
 LANGS = [("en", "English"), ("ja", "日本語")]
+
+# Styling close to Painter's own property panels: dark fields, thin slider with a round handle,
+# numeric boxes without spin arrows, flat gray buttons.
+PANEL_QSS = """
+QWidget#TexSetSpotlightPanel { background: #2b2b2b; }
+QLabel { color: #b8b8b8; }
+QCheckBox { color: #d4d4d4; spacing: 7px; }
+QCheckBox::indicator { width: 13px; height: 13px; border: 1px solid #121212; border-radius: 2px; background: #1b1b1b; }
+QCheckBox::indicator:hover { border: 1px solid #5a5a5a; }
+QCheckBox::indicator:checked { background: #9a9a9a; border: 1px solid #0d0d0d; }
+QSlider::groove:horizontal { height: 3px; background: #171717; border-radius: 1px; }
+QSlider::sub-page:horizontal { background: #8d8d8d; border-radius: 1px; }
+QSlider::add-page:horizontal { background: #171717; border-radius: 1px; }
+QSlider::handle:horizontal { width: 10px; height: 10px; margin: -4px 0; background: #d9d9d9; border: 1px solid #0d0d0d; border-radius: 5px; }
+QSlider::handle:horizontal:hover { background: #ffffff; }
+QSpinBox, QDoubleSpinBox, QComboBox { background: #1b1b1b; color: #e8e8e8; border: 1px solid #111111; border-radius: 3px;
+    padding: 2px 6px; selection-background-color: #5c5c5c; }
+QSpinBox:hover, QDoubleSpinBox:hover, QComboBox:hover { border: 1px solid #5a5a5a; }
+QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { width: 0px; border: none; }
+QComboBox::drop-down { border: none; width: 18px; }
+QComboBox QAbstractItemView { background: #1b1b1b; color: #e8e8e8; selection-background-color: #4a4a4a; border: 1px solid #111111; }
+QPushButton { background: #424242; color: #e8e8e8; border: 1px solid #171717; border-radius: 3px; padding: 4px 12px; min-height: 18px; }
+QPushButton:hover { background: #505050; }
+QPushButton:pressed { background: #303030; }
+"""
 
 
 def T(cfg, key):
@@ -432,11 +457,12 @@ class SettingsPanel(QtWidgets.QWidget):
         self.owner = owner
         self.setWindowTitle(T(owner.cfg, "panel"))
         self.setObjectName("TexSetSpotlightPanel")
+        self.setStyleSheet(PANEL_QSS)
         self.controls = {}
         self.labels = {}
         lay = QtWidgets.QVBoxLayout(self)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(6)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(8)
 
         top = QtWidgets.QHBoxLayout()
         self.chk_enabled = QtWidgets.QCheckBox()
@@ -456,16 +482,19 @@ class SettingsPanel(QtWidgets.QWidget):
         lay.addWidget(self.chk_xray)
 
         form = QtWidgets.QGridLayout()
-        form.setHorizontalSpacing(8)
-        form.setVerticalSpacing(4)
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(7)
+        form.setColumnMinimumWidth(0, 150)
+        form.setColumnStretch(1, 1)
         lay.addLayout(form)
         self.row = 0
         self.color_btn = QtWidgets.QPushButton()
-        self.color_btn.setFixedWidth(90)
+        self.color_btn.setFixedSize(110, 22)
+        self.color_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.color_btn.clicked.connect(self.pick_color)
         self.labels["color"] = QtWidgets.QLabel()
         form.addWidget(self.labels["color"], self.row, 0)
-        form.addWidget(self.color_btn, self.row, 1)
+        form.addWidget(self.color_btn, self.row, 1, 1, 2, QtCore.Qt.AlignLeft)
         self.row += 1
         self.add_slider(form, "hold_ms", 100, 10000, 100, 1)
         self.add_slider(form, "fade_ms", 100, 10000, 100, 1)
@@ -515,7 +544,9 @@ class SettingsPanel(QtWidgets.QWidget):
             spin.setRange(lo, hi)
             spin.setSingleStep(step)
             spin.setDecimals(2)
-        spin.setFixedWidth(90)
+        spin.setFixedWidth(72)
+        spin.setAlignment(QtCore.Qt.AlignRight)
+        spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
         guard = {"busy": False}
 
         def from_slider(v):
@@ -563,7 +594,8 @@ class SettingsPanel(QtWidgets.QWidget):
         c = self.owner.cfg["color"]
         col = QtGui.QColor.fromRgbF(c[0], c[1], c[2])
         self.color_btn.setText(col.name())
-        self.color_btn.setStyleSheet("background-color: %s; color: %s;" % (col.name(), "#000" if col.lightnessF() > 0.5 else "#fff"))
+        self.color_btn.setStyleSheet("QPushButton { background-color: %s; color: %s; border: 1px solid #111111; border-radius: 3px; }"
+                                     % (col.name(), "#000" if col.lightnessF() > 0.5 else "#fff"))
 
     def pick_color(self):
         c = self.owner.cfg["color"]
