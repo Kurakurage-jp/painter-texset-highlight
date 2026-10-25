@@ -3,14 +3,21 @@
 # Select a texture set in the Texture Set List and the meshes that use it flash in the 3D viewport
 # (hold for 1 s, then fade out over 1 s). With "X-ray" enabled, every other texture set is drawn
 # semi-transparent and dimmed while the flash runs, so parts hidden inside the model show through.
+# Click a layer's mask in the Layers panel and only the masked area flashes, without switching the viewport to
+# the mask view.
 #
 # How it works
 #   Painter has no API to overlay colors in the viewport, so the plugin temporarily assigns a shader
 #   instance ("TexSet Highlight", texset_highlight_shader.glsl = metal/rough PBR with an emissive
 #   highlight) to the selected texture set and animates its highlight_mix parameter. Other texture
-#   sets get a "ghost" instance of the same shader (alpha/brightness multipliers). Layer stacks are
-#   never touched. The original shader assignments are restored when the flash ends, before the
-#   project is saved or closed, and on the next project open if Painter crashed mid-flash.
+#   sets get a "ghost" instance of the same shader (alpha/brightness multipliers). The original shader
+#   assignments are restored when the flash ends, before the project is saved or closed, and on the next
+#   project open if Painter crashed mid-flash.
+#   Mask flash: Painter cannot export a layer mask directly (the "mask" map of alg.mapexport.save is the
+#   material-layering blending mask), so the plugin briefly adds an anchor point on top of the layer's mask
+#   and a hidden fill layer that reads it as base color, renders that layer to a PNG, and deletes both again
+#   (two undo steps named "TexSet Highlight: mask (temporary)"). The PNG is imported into the session and
+#   given to the shader as highlight_mask. The texture set flash alone never touches the layer stack.
 #
 # Install: copy texset_highlight.py and texset_highlight_shader.glsl into Painter's plugins folder
 #   (Windows: Documents\Adobe\Adobe Substance 3D Painter\python\plugins). Painter loads it at startup;
@@ -24,6 +31,7 @@ import time
 
 import substance_painter.event as spevent
 import substance_painter.js as spjs
+import substance_painter.layerstack as spls
 import substance_painter.logging as splog
 import substance_painter.project as spproj
 import substance_painter.resource as spres
@@ -40,8 +48,11 @@ STATE_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
 POLL_MS = 150
 FADE_STEP_MS = 33
+MASK_SCOPE = "TexSet Highlight: mask (temporary)"
+MASK_TEMP_NAME = "_texset_highlight"
+MASK_RES = 1024
 
-_defaults = {"enabled": True, "xray": True, "hold_ms": 1000, "fade_ms": 1000, "color": [0.55, 1.0, 0.25],
+_defaults = {"enabled": True, "mask_enabled": True, "xray": True, "hold_ms": 1000, "fade_ms": 1000, "color": [0.55, 1.0, 0.25],
              "intensity": 1.2, "tint": 0.5, "ghost_alpha": 0.12, "ghost_dim": 0.35,
              "lang": "ja" if QtCore.QLocale.system().name().startswith("ja") else "en"}
 _plugin = None
@@ -50,11 +61,13 @@ _plugin = None
 TEXT = {
     "en": {"menu": "Highlight", "open": "Open the Highlight panel", "panel": "Highlight", "language": "Language",
            "enabled": "Flash automatically when a texture set is selected", "xray": "X-ray: see through the other texture sets",
+           "mask_enabled": "Flash the masked area when a layer mask is selected",
            "color": "Highlight color", "color_dialog": "Highlight color", "hold_ms": "Hold time (ms)", "fade_ms": "Fade time (ms)",
            "intensity": "Highlight intensity", "tint": "Highlight tint", "ghost_alpha": "X-ray opacity", "ghost_dim": "X-ray brightness",
            "flash_now": "Flash the selected texture set", "reset": "Reset to defaults"},
     "ja": {"menu": "ハイライト", "open": "ハイライトのパネルを開く", "panel": "ハイライト", "language": "言語",
            "enabled": "テクスチャセットを選んだときに自動で光らせる", "xray": "X-ray: ほかのテクスチャセットを透かして中を見せる",
+           "mask_enabled": "レイヤーのマスクを選んだときにマスクの部分を光らせる",
            "color": "光の色", "color_dialog": "光の色", "hold_ms": "表示する時間 (ms)", "fade_ms": "消える時間 (ms)",
            "intensity": "光の強さ", "tint": "色味の混ぜ具合", "ghost_alpha": "X-ray の不透明度", "ghost_dim": "X-ray の明るさ",
            "flash_now": "選択中のテクスチャセットを光らせる", "reset": "既定に戻す"},
@@ -177,11 +190,38 @@ def active_set_name():
     return None
 
 
+def selected_mask_layer():
+    """The layer whose mask is selected in the Layers panel (the mask itself or an effect inside it), else None."""
+    try:
+        nodes = spls.get_selected_nodes(spts.get_active_stack())
+    except Exception:
+        return None
+    if len(nodes) != 1:
+        return None
+    layer = nodes[0]
+    if not isinstance(layer, spls.LayerNode):
+        try:
+            layer = layer.get_parent()  # an effect is selected: its layer tells whether it sits in the mask
+        except Exception:
+            return None
+    try:
+        if layer.has_mask() and spls.get_selection_type(layer) == spls.SelectionType.Mask:
+            return layer
+    except Exception:
+        pass
+    return None
+
+
 class Highlight(QtCore.QObject):
     def __init__(self):
         super().__init__()
         self.cfg = load_settings()
         self.last_name = None
+        self.last_mask = None  # (texture set, layer uid) of the selected mask
+        self.mask_url = None   # session resource of the mask being flashed
+        self.mask_count = 0
+        self.rendering = False
+        self.clear_mask_files()
         # While a flash runs: {"set": name, "originals": {set: label}, "shaders_backup": {label: definition}, "project": path}
         self.active = None
         self.shader_url = None
@@ -224,8 +264,14 @@ class Highlight(QtCore.QObject):
         return None
 
     # ---- selection polling (Painter has no texture-set-selection event)
+    def mask_key(self, name):
+        if not self.cfg["mask_enabled"]:
+            return None
+        layer = selected_mask_layer()
+        return (name, layer.uid()) if layer is not None else None
+
     def on_poll(self):
-        if not self.cfg["enabled"]:
+        if not (self.cfg["enabled"] or self.cfg["mask_enabled"]) or self.rendering:
             return
         try:
             if not (spproj.is_open() and spproj.is_in_edition_state()) or spproj.is_busy():
@@ -237,13 +283,77 @@ class Highlight(QtCore.QObject):
             return
         if self.last_name is None:
             self.last_name = name  # do not flash right after startup / project open
+            self.last_mask = self.mask_key(name)
             return
         if name != self.last_name:
             self.last_name = name
-            self.flash(name)
+            self.last_mask = self.mask_key(name)  # the texture set flash wins; no second flash for its selected mask
+            if self.cfg["enabled"]:
+                self.flash(name)
+            return
+        key = self.mask_key(name)
+        if key != self.last_mask:
+            self.last_mask = key
+            if key is not None:
+                self.flash_mask(name, key[1])
+
+    # ---- mask flash
+    def clear_mask_files(self, keep=None):
+        try:
+            for f in os.listdir(STATE_DIR):
+                if f.startswith("mask_") and f.endswith(".png") and f != keep:
+                    os.remove(os.path.join(STATE_DIR, f))
+        except OSError:
+            pass
+
+    def render_mask(self, layer):
+        """Render the layer's mask to a PNG (UV space) and import it into the session. Returns the resource url."""
+        stack = spts.get_active_stack()
+        selected = spls.get_selected_nodes(stack)
+        self.mask_count += 1
+        os.makedirs(STATE_DIR, exist_ok=True)
+        # Painter reads a trailing "_<number>" in an image name as a UDIM tile, so the name must not end with digits
+        fname = "mask_u%dv%dm.png" % (layer.uid(), self.mask_count)
+        path = os.path.join(STATE_DIR, fname).replace("\\", "/")
+        # The export only sees layers that exist outside a ScopedModification, hence two separate modifications
+        with spls.ScopedModification(MASK_SCOPE):
+            anchor = spls.insert_anchor_point_effect(spls.InsertPosition.inside_node(layer, spls.NodeStack.Mask), MASK_TEMP_NAME)
+            tmp = spls.insert_fill(spls.InsertPosition.from_textureset_stack(stack))
+            tmp.set_name(MASK_TEMP_NAME)
+            tmp.active_channels = {spls.ChannelType.BaseColor}
+            tmp.set_source(spls.ChannelType.BaseColor, anchor)
+            tmp.set_visible(False)
+        try:
+            js('alg.mapexport.save([%d, "basecolor"], %s, {resolution:[%d,%d]})' % (tmp.uid(), json.dumps(path), MASK_RES, MASK_RES))
+        finally:
+            with spls.ScopedModification(MASK_SCOPE):
+                spls.delete_node(tmp)
+                spls.delete_node(anchor)
+            try:
+                spls.set_selected_nodes(selected)
+                spls.set_selection_type(layer, spls.SelectionType.Mask)
+            except Exception:
+                pass
+        if not os.path.exists(path):
+            return None
+        url = spres.import_session_resource(path, spres.Usage.TEXTURE).identifier().url()
+        self.clear_mask_files(keep=fname)
+        return url
+
+    def flash_mask(self, name, uid):
+        self.rendering = True
+        try:
+            url = self.render_mask(spls.get_node_by_uid(uid))
+            if url:
+                self.flash(name, mask_url=url)
+        except Exception as e:
+            log("mask flash failed: %r" % (e,))
+        finally:
+            self.rendering = False
 
     # ---- flash
-    def flash(self, name):
+    def flash(self, name, mask_url=None):
+        self.mask_url = mask_url
         try:
             url = self.ensure_shader()
             if not url:
@@ -279,6 +389,10 @@ class Highlight(QtCore.QObject):
             os.makedirs(STATE_DIR, exist_ok=True)
             with open(STATE_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.active, f, ensure_ascii=False)
+            if mask_url:
+                set_params(HL_LABEL, {"highlight_use_mask": True, "highlight_mask": mask_url})
+            else:
+                set_params(HL_LABEL, {"highlight_use_mask": False})
             self.set_mix(1.0)
             self.hold.start(int(self.cfg["hold_ms"]))
         except Exception as e:
@@ -422,10 +536,11 @@ class Highlight(QtCore.QObject):
         save_settings(self.cfg)
         if key == "lang":
             self.retranslate()
-        elif key == "enabled":
+        elif key in ("enabled", "mask_enabled"):
             if not value:
                 self.restore()
             self.last_name = None
+            self.last_mask = None
         elif self.active is not None and key in ("color", "intensity", "tint", "ghost_alpha", "ghost_dim"):
             try:
                 self.set_mix(1.0 if self.hold.isActive() else 0.5)  # preview while a flash is running
@@ -436,7 +551,12 @@ class Highlight(QtCore.QObject):
         name = active_set_name()
         if name:
             self.last_name = name
-            self.flash(name)
+            key = self.mask_key(name)
+            self.last_mask = key
+            if key is not None:
+                self.flash_mask(name, key[1])  # a mask is selected: flash just the masked area
+            else:
+                self.flash(name)
 
     def shutdown(self):
         self.poll.stop()
@@ -487,6 +607,9 @@ class SettingsPanel(QtWidgets.QWidget):
         self.chk_enabled = QtWidgets.QCheckBox()
         self.chk_enabled.toggled.connect(lambda on: owner.update_setting("enabled", bool(on)))
         self.lay.addWidget(self.chk_enabled)
+        self.chk_mask = QtWidgets.QCheckBox()
+        self.chk_mask.toggled.connect(lambda on: owner.update_setting("mask_enabled", bool(on)))
+        self.lay.addWidget(self.chk_mask)
         self.chk_xray = QtWidgets.QCheckBox()
         self.chk_xray.toggled.connect(lambda on: owner.update_setting("xray", bool(on)))
         self.lay.addWidget(self.chk_xray)
@@ -522,6 +645,7 @@ class SettingsPanel(QtWidgets.QWidget):
         cfg = self.owner.cfg
         self.setWindowTitle(T(cfg, "panel"))
         self.chk_enabled.setText(T(cfg, "enabled"))
+        self.chk_mask.setText(T(cfg, "mask_enabled"))
         self.chk_xray.setText(T(cfg, "xray"))
         for key, label in self.labels.items():
             label.setText(T(cfg, key))
@@ -582,7 +706,7 @@ class SettingsPanel(QtWidgets.QWidget):
 
     def refresh(self):
         cfg = self.owner.cfg
-        for w, key in ((self.chk_enabled, "enabled"), (self.chk_xray, "xray")):
+        for w, key in ((self.chk_enabled, "enabled"), (self.chk_mask, "mask_enabled"), (self.chk_xray, "xray")):
             w.blockSignals(True)
             w.setChecked(bool(cfg[key]))
             w.blockSignals(False)
