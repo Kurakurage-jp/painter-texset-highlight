@@ -8,24 +8,30 @@
 #
 # How it works
 #   Painter has no API to overlay colors in the viewport, so the plugin temporarily assigns a shader
-#   instance ("TexSet Highlight", texset_highlight_shader.glsl = metal/rough PBR with an emissive
-#   highlight) to the selected texture set and animates its highlight_mix parameter. Other texture
-#   sets get a "ghost" instance of the same shader (alpha/brightness multipliers). The original shader
-#   assignments are restored when the flash ends, before the project is saved or closed, and on the next
-#   project open if Painter crashed mid-flash.
+#   instance ("TexSet Highlight") to the selected texture set and animates its highlight_mix parameter.
+#   Other texture sets get a "ghost" instance of the same shader (alpha/brightness multipliers). The original
+#   shader assignments are restored when the flash ends, before the project is saved or closed, and on the
+#   next project open if Painter crashed mid-flash.
+#   The highlight shader is not shipped with the plugin: Painter's shader files are Adobe's. At first use the
+#   plugin reads Painter's own pbr-metal-rough-with-alpha-blending.glsl from the installation, adds the
+#   highlight/ghost parameters and outputs to a copy in %LOCALAPPDATA%\TexSetHighlight, and imports that copy
+#   into the session. The copy is rebuilt whenever the stock shader changes (Painter update).
 #   Mask flash: Painter cannot export a layer mask directly (the "mask" map of alg.mapexport.save is the
 #   material-layering blending mask), so the plugin briefly adds an anchor point on top of the layer's mask
 #   and a hidden fill layer that reads it as base color, renders that layer to a PNG, and deletes both again
 #   (two undo steps named "TexSet Highlight: mask (temporary)"). The PNG is imported into the session and
 #   given to the shader as highlight_mask. The texture set flash alone never touches the layer stack.
 #
-# Install: copy texset_highlight.py and texset_highlight_shader.glsl into Painter's plugins folder
+# Install: copy texset_highlight.py into Painter's plugins folder
 #   (Windows: Documents\Adobe\Adobe Substance 3D Painter\python\plugins). Painter loads it at startup;
 #   click "Highlight" in the menu bar to open the settings panel (a dockable window with every option).
 # Tested with Substance 3D Painter 12.1.1 (Vulkan) on Windows 11: Python API 0.3.5, Python 3.13.9, PySide6 6.8.6,
 #   JavaScript API 1.1.20. Other 12.x releases are expected to work but were not checked.
+# This is an independent plugin, not affiliated with or endorsed by Adobe.
+import hashlib
 import json
 import os
+import re
 import tempfile
 import time
 
@@ -40,17 +46,22 @@ import substance_painter.ui as spui
 from PySide6 import QtCore, QtGui, QtWidgets
 
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
-SHADER_NAME = "texset_highlight_shader"
-SHADER_FILE = os.path.join(PLUGIN_DIR, SHADER_NAME + ".glsl")
 HL_LABEL = "TexSet Highlight"
 GHOST_LABEL = "TexSet Highlight Ghost"
 STATE_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir(), "TexSetHighlight")
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
+# Painter's own shader the highlight shader is generated from (see build_highlight_shader)
+STOCK_SHADER = "pbr-metal-rough-with-alpha-blending"
+SHADER_PREFIX = "texset_highlight_v"
+GEN_VERSION = "2"  # bump when the generated additions change, so an old copy in a project is not reused
 POLL_MS = 150
 FADE_STEP_MS = 33
 MASK_SCOPE = "TexSet Highlight: mask (temporary)"
 MASK_TEMP_NAME = "_texset_highlight"
 MASK_RES = 1024
+# Used when a project was saved while flashing and no original instance is left to go back to
+FALLBACK_SHADER = "pbr-metal-rough-with-alpha-blending"
+FALLBACK_LABEL = "Main shader"
 
 _defaults = {"enabled": True, "mask_enabled": True, "xray": True, "hold_ms": 1000, "fade_ms": 1000, "color": [0.55, 1.0, 0.25],
              "intensity": 1.2, "tint": 0.5, "ghost_alpha": 0.12, "ghost_dim": 0.35,
@@ -163,6 +174,128 @@ def apply_shader_object(obj):
     js("alg.shaders.shaderInstancesFromObject(%s)" % json.dumps(obj, ensure_ascii=False))
 
 
+def is_ours(label):
+    return label in (HL_LABEL, GHOST_LABEL)
+
+
+def repair_assignments(obj):
+    """Move texture sets left on our instances (or on an undefined one) back to a regular instance.
+
+    Happens when a project was saved mid-flash by something that skips ProjectAboutToSave, or when an undo
+    brought our assignment back. Without this, the next flash would record our instance as the "original".
+    Returns True if obj was changed (and applied)."""
+    sets = obj.get("texturesets", {})
+    stuck = [s for s, v in sets.items() if is_ours(v.get("shader")) or v.get("shader") not in obj["shaders"]]
+    if not stuck:
+        return False
+    target = next((k for k in obj["shaders"] if not is_ours(k)), None)
+    if target is None:
+        url = next((r.identifier().url() for r in spres.search("u:shader")
+                    if r.identifier().name == FALLBACK_SHADER and r.identifier().context == "starter_assets"), None)
+        if url is None:
+            log("repair failed: %s not found" % FALLBACK_SHADER)
+            return False
+        target = FALLBACK_LABEL
+        obj["shaders"][target] = {"shader": url, "shaderInstance": target, "parameters": {}}
+    for s in stuck:
+        sets[s] = {"shader": target}
+    obj["shaders"].pop(HL_LABEL, None)
+    obj["shaders"].pop(GHOST_LABEL, None)
+    apply_shader_object(obj)
+    log("repaired texture sets left on the highlight shader: %s -> %s" % (", ".join(stuck), target))
+    return True
+
+
+# ---- shader generation
+# The highlight shader is Painter's pbr-metal-rough-with-alpha-blending.glsl plus these parameters:
+#   highlight_* tint the base color toward highlight_color and add it as emissive (the flash),
+#   ghost_* scale opacity and brightness (the x-ray view of the other texture sets),
+#   highlight_mask / highlight_use_mask limit the flash to a layer mask rendered by the plugin (UV space).
+# Everything below is text surgery on the user's own copy of the stock shader, so no Adobe code ships here.
+HL_PARAMS = '''
+//: param custom { "default": [0.55, 1.0, 0.25], "label": "Highlight Color", "widget": "color", "group": "Highlight" }
+uniform vec3 highlight_color;
+//: param custom { "default": 0.0, "label": "Highlight Mix", "min": 0.0, "max": 1.0, "group": "Highlight" }
+uniform float highlight_mix;
+//: param custom { "default": 1.2, "label": "Highlight Intensity", "min": 0.0, "max": 8.0, "group": "Highlight" }
+uniform float highlight_intensity;
+//: param custom { "default": 0.5, "label": "Highlight Tint", "min": 0.0, "max": 1.0, "group": "Highlight" }
+uniform float highlight_tint;
+//: param custom { "default": 1.0, "label": "Ghost Alpha", "min": 0.0, "max": 1.0, "group": "Highlight" }
+uniform float ghost_alpha;
+//: param custom { "default": 1.0, "label": "Ghost Dim", "min": 0.0, "max": 1.0, "group": "Highlight" }
+uniform float ghost_dim;
+//: param custom { "default": false, "label": "Use Highlight Mask", "group": "Highlight" }
+uniform bool highlight_use_mask;
+//: param custom { "default": "", "default_color": [1.0, 1.0, 1.0, 1.0], "label": "Highlight Mask", "usage": "texture", "group": "Highlight" }
+uniform sampler2D highlight_mask;
+
+'''
+
+
+def stock_shader_file():
+    """Path of Painter's own STOCK_SHADER.glsl, looked up next to the running application."""
+    app = QtCore.QCoreApplication.applicationDirPath()
+    rel = os.path.join("starter_assets", "shaders", STOCK_SHADER + ".glsl")
+    for base in (os.path.join(app, "resources"), os.path.join(app, "..", "Resources"), os.path.join(app, "..", "resources"), app):
+        p = os.path.normpath(os.path.join(base, rel))
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def _wrap_call(src, name, fmt, start=0):
+    """Rewrite the argument of the first `name(...)` after start as fmt % argument (parentheses balanced)."""
+    k = src.find(name + "(", start)
+    if k < 0:
+        return None
+    i = k + len(name) + 1
+    depth, j = 1, i
+    while j < len(src) and depth:
+        if src[j] == "(":
+            depth += 1
+        elif src[j] == ")":
+            depth -= 1
+        j += 1
+    if depth:
+        return None
+    return src[:i] + (fmt % src[i:j - 1]) + src[j - 1:]
+
+
+def build_highlight_shader(stock_src, stock_path=""):
+    """Return the highlight shader source built from the stock shader's source, or None if the stock
+    shader no longer has the lines this relies on (shade(), the baseColor line and the four *Output calls)."""
+    m = re.search(r"^void\s+shade\s*\(", stock_src, re.M)
+    if not m:
+        return None
+    head = ("//- Generated by the TexSet Highlight plugin from Painter's own %s.glsl\n"
+            "//- (%s). Do not edit: it is rebuilt when that file changes.\n\n" % (STOCK_SHADER, stock_path))
+    src = head + stock_src[:m.start()] + HL_PARAMS + stock_src[m.start():]
+    body_at = src.find("void shade")
+    m = re.compile(r"^([ \t]*)vec3\s+baseColor\s*=\s*(.+?);[ \t]*$", re.M).search(src, body_at)
+    if not m:
+        return None
+    ind = m.group(1)
+    src = (src[:m.start()]
+           + ind + "float h = clamp(highlight_mix, 0.0, 1.0);\n"
+           + ind + "if (highlight_use_mask) {\n"
+           + ind + "  h *= clamp(texture(highlight_mask, inputs.tex_coord).r, 0.0, 1.0);\n"
+           + ind + "}\n"
+           + ind + "vec3 baseColor = mix(%s, highlight_color, h * highlight_tint);" % m.group(2)
+           + src[m.end():])
+    m = re.compile(r"^([ \t]*)emissiveColorOutput\(", re.M).search(src, body_at)
+    if not m:
+        return None
+    src = src[:m.start()] + m.group(1) + "vec3 glow = highlight_color * (highlight_intensity * h);\n" + src[m.start():]
+    for name, fmt in (("alphaOutput", "(%s) * ghost_alpha"), ("emissiveColorOutput", "((%s) + glow) * ghost_dim"),
+                      ("diffuseShadingOutput", "ghost_dim * (%s)"), ("specularShadingOutput", "ghost_dim * (%s)")):
+        src = _wrap_call(src, name, fmt, body_at)
+        if src is None:
+            return None
+    return src
+# ---- end shader generation
+
+
 def instance_ids():
     # Instance ids change after shaderInstancesFromObject, so always look them up by label.
     return {i["label"]: i["id"] for i in json.loads(js("JSON.stringify(alg.shaders.instances())"))}
@@ -248,20 +381,34 @@ class Highlight(QtCore.QObject):
 
     # ---- shader resource
     def ensure_shader(self):
-        """Use the shader from a shelf if one is registered, otherwise import the file next to this plugin."""
+        """URL of the highlight shader: generated from Painter's stock shader and imported into the session once.
+
+        The generated file is named after a hash of the stock shader (and GEN_VERSION), so a copy that Painter
+        already holds (session, or saved into the project) is reused and a changed stock shader gets a new one."""
         if self.shader_url:
             return self.shader_url
+        stock = stock_shader_file()
+        if not stock:
+            log("Painter's %s.glsl was not found next to the application; the highlight is off" % STOCK_SHADER)
+            return None
+        with open(stock, encoding="utf-8") as f:
+            stock_src = f.read()
+        name = SHADER_PREFIX + hashlib.sha1((GEN_VERSION + "\n" + stock_src).encode("utf-8")).hexdigest()[:10]
         for r in spres.search("u:shader"):
-            i = r.identifier()
-            if i.name == SHADER_NAME and not i.context.startswith("session"):
-                self.shader_url = i.url()
+            if r.identifier().name == name:
+                self.shader_url = r.identifier().url()
                 return self.shader_url
-        if os.path.exists(SHADER_FILE):
-            self.shader_url = spres.import_session_resource(SHADER_FILE, spres.Usage.SHADER).identifier().url()
-            log("shader imported into the session: " + SHADER_FILE)
-            return self.shader_url
-        log("shader file not found: " + SHADER_FILE)
-        return None
+        src = build_highlight_shader(stock_src, stock)
+        if src is None:
+            log("Painter's %s.glsl does not look like the version this plugin knows; the highlight is off" % STOCK_SHADER)
+            return None
+        os.makedirs(STATE_DIR, exist_ok=True)
+        path = os.path.join(STATE_DIR, name + ".glsl")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(src)
+        self.shader_url = spres.import_session_resource(path, spres.Usage.SHADER).identifier().url()
+        log("highlight shader generated from %s and imported into the session: %s" % (stock, path))
+        return self.shader_url
 
     # ---- selection polling (Painter has no texture-set-selection event)
     def mask_key(self, name):
@@ -361,6 +508,8 @@ class Highlight(QtCore.QObject):
             self.hold.stop()
             self.fade.stop()
             obj = shader_object()
+            if self.active is None and repair_assignments(obj):
+                obj = shader_object()
             sets = obj.get("texturesets", {})
             if name not in sets:
                 return
@@ -455,6 +604,7 @@ class Highlight(QtCore.QObject):
             obj["shaders"].pop(HL_LABEL, None)
             obj["shaders"].pop(GHOST_LABEL, None)
             apply_shader_object(obj)
+            repair_assignments(shader_object())
         except Exception as e:
             log("restore failed: %r" % (e,))
         try:
@@ -466,6 +616,11 @@ class Highlight(QtCore.QObject):
     def recover(self):
         """If Painter died mid-flash, put the shader assignments back when that project is opened again."""
         if not os.path.exists(STATE_FILE):
+            try:
+                if self.active is None and spproj.is_open() and spproj.is_in_edition_state():
+                    repair_assignments(shader_object())  # a project saved mid-flash elsewhere (e.g. by autosave)
+            except Exception as e:
+                log("repair failed: %r" % (e,))
             return
         try:
             with open(STATE_FILE, encoding="utf-8") as f:
@@ -480,6 +635,10 @@ class Highlight(QtCore.QObject):
     # ---- events
     def on_about_to_save(self, e):
         self.restore()
+        try:
+            repair_assignments(shader_object())
+        except Exception as e:
+            log("repair failed: %r" % (e,))
 
     def on_about_to_close(self, e):
         self.restore()
